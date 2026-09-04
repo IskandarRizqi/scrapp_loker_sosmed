@@ -1,0 +1,6 @@
+{
+  "name": "LokerDetector - Social Media Job Scraper & Doc Generator",
+  "description": "Alat AI pendeteksi & penganalisis lowongan kerja (loker) dari Instagram & Facebook. Membaca teks & gambar poster/sorotan IG, mengekstrak detail kualifikasi & kontak, serta mengunduh laporan format Word (.doc).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

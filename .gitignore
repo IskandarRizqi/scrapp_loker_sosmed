@@ -1,0 +1,14 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# Facebook login session (contains credentials — never commit)
+facebook-session.json
+
+# Server-side data (scheduled IG results + schedule config, 30-day retention)
+data/
