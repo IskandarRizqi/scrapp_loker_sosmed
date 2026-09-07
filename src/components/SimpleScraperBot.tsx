@@ -583,7 +583,7 @@ export const SimpleScraperBot: React.FC<SimpleScraperBotProps> = ({
             <div className="bg-slate-950 p-4 rounded-xl border border-slate-800">
               <label className="block text-[11px] font-bold text-slate-300 uppercase tracking-wider mb-2 flex items-center space-x-1.5">
                 <CalendarClock className="h-3 w-3 text-emerald-400" />
-                <span>Setiap Hari</span>
+                <span>Jadwal Setting Hari</span>
               </label>
               <input
                 type="number"
@@ -620,7 +620,7 @@ export const SimpleScraperBot: React.FC<SimpleScraperBotProps> = ({
             <div className="bg-slate-950 p-4 rounded-xl border border-slate-800">
               <label className="block text-[11px] font-bold text-slate-300 uppercase tracking-wider mb-2 flex items-center space-x-1">
                 <Calendar className="h-3 w-3 text-amber-400" />
-                <span>Rentang Hari</span>
+                <span>Rentang Hari </span>
               </label>
               <select
                 value={daysBack}

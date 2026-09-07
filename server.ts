@@ -66,6 +66,12 @@ const SCRAPER_API_URL =
   process.env.SCRAPER_API_URL || 'https://bankiracademy.co.id/api/v1/scraper/loker-draft';
 const SCRAPER_API_KEY = process.env.SCRAPER_API_KEY || '';
 
+// WhatsApp Notification: kirim jumlah loker hasil run ke nomor WA tujuan via Merchant API.
+// Kosong => notifikasi dilewati (log warning), tanpa mengganggu alur batch/Excel/API.
+const WA_API_URL = process.env.WA_API_URL || '';
+const WA_API_KEY = process.env.WA_API_KEY || '';
+const WA_TO_NUMBER = process.env.WA_TO_NUMBER || '';
+
 // Facebook auto-scan discovery (search-based) is disabled by default because every free
 // access path is login-walled. The dedicated Facebook card instead uses a Playwright
 // browser session (see "Facebook Group Scraper" below) to log in once and scroll real groups.
@@ -1017,6 +1023,49 @@ async function sendBatchToApi(batch: ScheduledBatch): Promise<void> {
   }
 }
 
+// Kirim notifikasi WhatsApp berisi jumlah loker hasil run ke nomor tujuan.
+// Jumlah 0 => pesan "tidak ada penambahan"; >0 => pesan "ada penambahan X".
+// Parameter days (opsional) mengendalikan teks saat count=0: nilai dari "Jadwal Setting" (intervalDays)
+// di UI. Kegagalan dibungkus try/catch agar tidak menggagalkan alur run/penyimpanan.
+async function sendWhatsAppNotification(count: number, days?: number): Promise<void> {
+  try {
+    if (!WA_API_URL || !WA_API_KEY || !WA_TO_NUMBER) {
+      console.warn('[wa-notif] WA_API_URL / WA_API_KEY / WA_TO_NUMBER kosong, notifikasi WA dilewati.');
+      return;
+    }
+    let body: string;
+    if (count > 0) {
+      body = `📋 *Loker IG*\n\nHari ini ada Penambahan *${count} Lowongan Pekerjaan Baru* dari Loker IG Scrapper`;
+    } else if (typeof days === 'number' && days > 1) {
+      body = `📋 *Loker IG*\n\n${days} hari terakhir tidak ada penambahan Lowongan Pekerjaan Baru dari Loker IG Scrapper`;
+    } else if (typeof days === 'number' && days >= 0) {
+      body = `📋 *Loker IG*\n\nHari ini tidak ada penambahan Lowongan Pekerjaan Baru dari Loker IG Scrapper`;
+    } else {
+      body = `📋 *Loker IG*\n\nBeberapa Hari ini TIDAK ada Penambahan Lowongan Pekerjaan Baru dari Loker IG Scrapper`;
+    }
+    const res = await fetch(WA_API_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${WA_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        to: WA_TO_NUMBER,
+        body,
+        external_id: `loker-ig-${Date.now()}`,
+      }),
+    });
+    const text = await res.text().catch(() => '');
+    if (res.ok) {
+      console.log(`[wa-notif] terkirim ${count} loker → HTTP ${res.status}`);
+    } else {
+      console.warn(`[wa-notif] gagal kirim → HTTP ${res.status}: ${text.slice(0, 300)}`);
+    }
+  } catch (err: any) {
+    console.warn('[wa-notif] error saat kirim notifikasi:', err?.message || err);
+  }
+}
+
 function loadIgSchedule(): void {
   ensureDataDir();
   try {
@@ -1193,6 +1242,7 @@ async function runScheduledIgScan(trigger: 'schedule' | 'manual'): Promise<void>
       // Kirim juga ke Scraper Ingestion API (draft database). Kegagalan tidak menggagalkan alur.
       await sendBatchToApi(batch);
     }
+    await sendWhatsAppNotification(batch.diagnostics.results, igSchedule.intervalDays);
     igSchedule.lastRunAt = capturedAt;
     igSchedule.lastStatus = `${trigger === 'schedule' ? 'Jadwal' : 'Manual'}: ${result.data.length} loker dari ${result.diagnostics.discovered} ditemukan (${result.diagnostics.analyzed} dianalisis).`;
     if (result.warnings && result.warnings.length > 0) {
@@ -2031,6 +2081,7 @@ app.post('/api/auto-scan', async (req, res) => {
     if (!result.success) {
       return res.status(400).json({ success: false, error: result.error });
     }
+    await sendWhatsAppNotification(result.diagnostics?.results ?? result.data?.length ?? 0, daysBack);
     return res.json({ success: true, data: result.data, warnings: result.warnings, diagnostics: result.diagnostics });
   } catch (err: any) {
     console.error('Error in /api/auto-scan:', err);
