@@ -1999,6 +1999,27 @@ app.post('/api/analyze-loker', async (req, res) => {
       isExpired: isDeadlineExpired(parsedResult.deadline as string | undefined),
     };
 
+    // Kirim hasil OCR manual ke Scraper Ingestion API (draft DB) — 1 lowongan per batch.
+    // Aman: SCRAPER_API_KEY kosong / gagal hanya warning, tidak menggagalkan respons.
+    if (resultData) {
+      const batch: ScheduledBatch = {
+        id: `batch-${Date.now()}`,
+        capturedAt: new Date().toISOString(),
+        daysBack: 0,
+        maxPosts: 1,
+        diagnostics: {
+          discovered: 1,
+          analyzed: 1,
+          bukanLoker: 0,
+          errorCount: 0,
+          duplicates: 0,
+          results: 1,
+        },
+        results: [{ vacancyData: resultData }],
+      };
+      await sendBatchToApi(batch).catch(() => undefined);
+    }
+
     return res.json({
       success: true,
       data: resultData,
@@ -2313,6 +2334,27 @@ app.post('/api/auto-scan', async (req, res) => {
     const result = await runIgAutoScan({ maxPosts, daysBack });
     if (!result.success) {
       return res.status(400).json({ success: false, error: result.error });
+    }
+    // Kirim hasil ke Scraper Ingestion API (draft DB) — sama seperti jalur jadwal.
+    // sendBatchToApi dibungkus try/catch internal: jika SCRAPER_API_KEY kosong atau
+    // API error, hanya warning tanpa menggagalkan respons UI/WA.
+    if (result.data && result.data.length > 0) {
+      const batch: ScheduledBatch = {
+        id: `batch-${Date.now()}`,
+        capturedAt: new Date().toISOString(),
+        daysBack: Number(daysBack) || 3,
+        maxPosts: Number(maxPosts) || 15,
+        diagnostics: {
+          discovered: result.diagnostics.discovered,
+          analyzed: result.diagnostics.analyzed,
+          bukanLoker: result.diagnostics.bukanLoker,
+          errorCount: result.diagnostics.errorCount,
+          duplicates: result.diagnostics.duplicates,
+          results: result.diagnostics.results,
+        },
+        results: result.data,
+      };
+      await sendBatchToApi(batch);
     }
     await sendWhatsAppNotification(countTotalPositions(result.data ?? []), daysBack);
     return res.json({ success: true, data: result.data, warnings: result.warnings, diagnostics: result.diagnostics });
