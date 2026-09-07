@@ -7,6 +7,7 @@ import { GoogleGenAI, Type } from '@google/genai';
 import dotenv from 'dotenv';
 import { chromium } from 'playwright';
 import { isDeadlineExpired, formatDateLabel, parseDiscoveryDate } from './src/utils/deadline';
+import { expandPositions, positionTitles, countTotalPositions } from './src/utils/positions';
 
 // Load .env.local first (local secrets), then fall back to .env
 dotenv.config({ path: path.resolve(process.cwd(), '.env.local') });
@@ -40,6 +41,15 @@ const DISCOVERY_MAX_JINA_REQUESTS = Math.max(1, Number(process.env.DISCOVERY_MAX
 const ANALYZE_CONCURRENCY = Math.max(1, Number(process.env.ANALYZE_CONCURRENCY) || 8);
 const SCAN_SOURCES_FILE = process.env.SCAN_SOURCES_FILE || 'loker-sources.json';
 const MAX_SLIDES = 12;
+// Langkah AI kedua (per-position refinement): ketika ekstraksi awal menghasilkan <= 1 entri
+// positions, Gemini diminta membaca ULANG semua slide + caption untuk mendaftar SATU entri per
+// posisi (jangan menggabungkan) berikut jobspek/jobdesk uniknya. Set false untuk mematikan.
+const POSITION_REFINE = process.env.POSITION_REFINE !== 'false';
+// Auto-scan Instagram HANYA menerima lembaga BPR / Koperasi / LPD (bank BPR syariah
+// termasuk). Bank umum/BUMN/Persero/BPD/bank umum syariah (BSI), Pegadaian, Asuransi,
+// dan Fintech/Pembiayaan DITOLAK sebagai NON-BPR.
+const ALLOWED_INSTITUTION_RE =
+  /\b(?:bprs?|bank (?:perekonomian|perkreditan) rakyat|koperasi|ksp|usp|lpd|perkreditan desa|lembaga perkreditan desa)\b/i;
 // Max Facebook search queries per whole-FB auto-scan run (each query = one search feed scroll).
 const FB_SEARCH_QUERY_LIMIT = Math.max(1, Number(process.env.FB_SEARCH_QUERY_LIMIT) || 5);
 // Max groups crawled per search query (group feeds are the richest source of posts).
@@ -132,7 +142,35 @@ const VACANCY_SCHEMA = {
     confidenceScore: { type: Type.INTEGER, description: 'Skor keyakinan 0-100%' },
     detectionReason: { type: Type.STRING, description: 'Alasan mengapa dianggap loker atau bukan loker' },
     companyName: { type: Type.STRING, description: 'Nama Perusahaan / Instansi / Toko / Brand' },
-    jobTitle: { type: Type.STRING, description: 'Nama Posisi / Jabatan Pekerjaan' },
+    jobTitle: { type: Type.STRING, description: 'Nama Posisi / Jabatan Pekerjaan (jika banyak, isi dengan posisi pertama atau gabungan dipisah koma)' },
+    positions: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          title: { type: Type.STRING, description: 'Nama posisi/jabatan (satu baris per posisi)' },
+          summary: { type: Type.STRING, description: 'Ringkasan eksekutif khusus posisi ini (2-3 kalimat)' },
+          responsibilities: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING },
+            description: 'Jobdesk AI (tugas & tanggung jawab) khusus posisi ini. Dikembangkan AI jika tidak tertulis eksplisit. JANGAN KOSONGKAN.',
+          },
+          requirements: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING },
+            description: 'Jobspek (syarat & kualifikasi) khusus posisi ini. Salin persis jika tertulis, jika tidak rangkum kebutuhan umum posisi ini. JANGAN KOSONGKAN.',
+          },
+          skills: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING },
+            description: 'Keahlian/kompetensi khusus posisi ini. JANGAN KOSONGKAN (minimal 1).',
+          },
+        },
+        required: ['title'],
+      },
+      description:
+        'Daftar seluruh posisi/jabatan yang dibuka dalam lowongan ini. Jika postingan menyebut beberapa posisi (misal "Marketing, Credit Analyst, Collection"), pecah menjadi satu entri per posisi. Jika hanya satu posisi, isi array dengan satu entri.',
+    },
     jobCategory: { type: Type.STRING, description: 'Kategori Pekerjaan (misal IT, Marketing, Admin, Design, Retail, dll)' },
     jobType: { type: Type.STRING, description: 'Tipe Pekerjaan (Full-Time, Part-Time, Freelance, Magang, Kontrak)' },
     workLocation: { type: Type.STRING, description: 'Lokasi Kerja (Kota, Wilayah, Remote, Hybrid)' },
@@ -192,6 +230,11 @@ const VACANCY_SCHEMA = {
       },
       description: 'Alamat administratif yang dirangkum AI dari alamat/lokasi pada poster (Provinsi, Kota/Kabupaten, Kecamatan, Kelurahan) atau null jika tidak dapat ditentukan',
     },
+    institutionType: {
+      type: Type.STRING,
+      description:
+        'Jenis institusi tempat lowongan dibuka. PILIH SALAH SATU dari: "BPR" (Bank Perekonomian Rakyat, termasuk BPR Syariah/BPRS), "Koperasi" (Koperasi Simpan Pinjam/KSP/USP/koperasi desa/UMKM), "LPD" (Lembaga Perkreditan Desa), "Bank Umum" (termasuk Bank BUMN/Persero, BPD, bank swasta, bank umum syariah seperti BSI), "Pegadaian", "Asuransi", "Fintech / Pembiayaan" (pinjol, P2P lending, leasing, perusahaan pembiayaan), atau "Bukan Lembaga Keuangan".',
+    },
   },
   required: [
     'isVacancy',
@@ -212,6 +255,7 @@ const VACANCY_SCHEMA = {
     'description',
     'isBankingSector',
     'summary',
+    'institutionType',
   ],
 };
 
@@ -232,6 +276,7 @@ Tugas utama Anda:
 - Jika caption atau gambar memuat informasi cara melamar, ekstrak LENGKAP ke field howToApply dan contactInfo (email, phoneWhatsapp, websiteForm, instagramDm, address). Jangan pernah mengosongkan howToApply bila informasi itu ada di caption/gambar.
 - Field description diisi teks deskripsi/caption postingan yang memuat info lowongan (bisa diambil langsung dari teks caption).
 - Field isBankingSector bernilai TRUE hanya jika lowongan ini memang dari sektor Perbankan / Jasa Keuangan / Lembaga Keuangan (bank BUMN/swasta, fintech, koperasi simpan pinjam, dll). FALSE untuk sektor lain (F&B, retail, kesehatan, IT, dsb).
+- Field institutionType WAJIB diisi dengan menemukan JENIS INSTITUSI lowongan. Namun PERHATIKAN — pipeline auto-scan HANYA menerima lembaga jenis "BPR" (Bank Perekonomian Rakyat, termasuk BPR Syariah/BPRS), "Koperasi" (KSP/USP/koperasi desa), dan "LPD" (Lembaga Perkreditan Desa). Bank umum/BUMN/Persero/BPD/bank swasta/bank umum syariah (misal BSI), Pegadaian, Asuransi, dan Fintech/Pembiayaan BUKAN target — tetap klasifikasikan institutionType-nya dengan jujur agar auto-scan dapat menolaknya.
 - Field logoBox: jika pada gambar/screenshot terdapat logo perusahaan/instansi yang jelas (umumnya di pojok kiri-atas poster), isi dengan koordinat kotak logo { "x": 0.00, "y": 0.00, "w": 0.00, "h": 0.00 } yang ternormalisasi 0-1 terhadap lebar & tinggi gambar (x,y = kiri-atas kotak; w,h = lebar & tinggi kotak). Jika TIDAK ada logo yang jelas, isi null.
 - Field companyWebsite: isi dengan domain situs web resmi perusahaan/instansi jika tertera di poster/caption (terutama bank/BPR — misal www.bprxyz.co.id). Kosongkan jika tidak ada.
 - Field logoUrl: jika logo perusahaan diketahui berada di situs webnya (misal bank/BPR), isi URL langsung file gambar logonya (misal https://www.bprxyz.co.id/logo.png atau gambar logo di header situs). Kosongkan jika tidak yakin.
@@ -240,7 +285,7 @@ Tugas utama Anda:
 - Field requirements (Jobspek): salin kualifikasi/syarat PERSIS sebagaimana tertulis di gambar/poster (jangan dikarang). Jika tidak ada syarat eksplisit di gambar, rangkum kualifikasi umum yang dibutuhkan untuk posisi tersebut. JANGAN KOSONGKAN.
 - Field skills (Keahlian): kembangkan DAFTAR keahlian/kompetensi spesifik yang dibutuhkan posisi ini (contoh: Microsoft Office/Excel, SIM C, kemampuan komunikasi, manajemen waktu, marketing). JANGAN KOSONGKAN — selalu isi minimal 1 keahlian.
 - Field summary (Ringkasan AI) dan responsibilities (Jobdesk AI): WAJIB selalu terisi; jika tidak tertulis eksplisit di gambar, kembangkan dari konteks lowongan tersebut. JANGAN KOSONGKAN.
-- Untuk setiap posisi yang disebutkan, masukkan ke field yang sesuai (requirements, responsibilities, workLocation, salaryInfo, deadline, jobType).
+- PENTING — POSISI JAMAK (positions): Jika postingan membuka BEBERAPA posisi sekaligus (misal "Dibutuhkan Marketing, Credit Analyst, Collection, Team Leader Kredit"), PECAH menjadi satu entri per posisi di array positions. BACA SEMUA slide carousel/gambar yang dikirim — daftar posisi sering TIDAK memakai pemisah (koma) dan bisa tersebar di beberapa slide, amati dari teks pada gambar maupun caption. DILARANG menggabungkan beberapa posisi dalam satu title pada entri positions. Setiap entri positions memiliki title sendiri serta summary, responsibilities (jobdesk AI), requirements (jobspek), dan skills yang dikembangkan KHUSUS untuk posisi itu — jangan menyatukan semua posisi ke satu respons. Field jobTitle boleh diisi gabungan nama posisi dipisah koma. Field bersama (companyName, workLocation, salaryInfo, deadline, jobType, contactInfo, howToApply, adminAddress) cukup diisi SEKALI di level vacancy (sama untuk semua posisi). Postingan dengan SATU posisi tetap mengisi array positions dengan satu entri.
 
 Konteks Sumber: ${sourceLabel || 'Media Sosial / Gambar Uploaded'}
 ${url ? `URL Tautan: ${url}` : ''}
@@ -266,6 +311,135 @@ async function generateVacancyJson(parts: ContentPart[]): Promise<Record<string,
     return JSON.parse(jsonText);
   } catch {
     throw new Error('Respons AI bukan JSON valid: ' + jsonText.slice(0, 200));
+  }
+}
+
+// Schema khusus pasangan ekstraksi kedua: HANYA daftar posisi (satu entri per posisi).
+const POSITIONS_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    positions: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          title: {
+            type: Type.STRING,
+            description:
+              'Nama posisi/jabatan. SATU posisi per entri — DILARANG menggabungkan beberapa posisi dalam satu title.',
+          },
+          summary: { type: Type.STRING, description: 'Ringkasan eksekutif khusus posisi ini (2-3 kalimat).' },
+          responsibilities: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING },
+            description: 'Jobdesk AI (tugas & tanggung jawab) khusus posisi ini.',
+          },
+          requirements: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING },
+            description: 'Jobspek (syarat & kualifikasi) khusus posisi ini.',
+          },
+          skills: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING },
+            description: 'Keahlian/kompetensi khusus posisi ini (minimal 1).',
+          },
+        },
+        required: ['title', 'summary', 'responsibilities', 'requirements', 'skills'],
+      },
+    },
+  },
+  required: ['positions'],
+};
+
+function buildPositionsRefinePrompt(opts: {
+  sourceLabel: string;
+  url?: string;
+  currentJobTitle?: string;
+  currentPositions?: unknown;
+}): string {
+  const current = Array.isArray(opts.currentPositions)
+    ? (opts.currentPositions as Array<{ title?: unknown }>)
+        .map((p) => (p && typeof p.title === 'string' ? p.title : ''))
+        .filter(Boolean)
+        .join(', ')
+    : (opts.currentJobTitle || '');
+  return `Anda adalah Asisten AI Spesialis Penyusun Daftar POSISI Lowongan Kerja dari media sosial (Instagram, Facebook, Threads, Twitter).
+Langkah pertama sudah menghasilkan ekstraksi awal lowongan. Tugas Anda sekarang: periksa ULANG konten di bawah (SEMUA gambar/slide + caption) dengan SAKSAMA, lalu susun daftar LENGKAP seluruh posisi/jabatan yang dibuka oleh lowongan ini.
+
+ATURAN WAJIB:
+1. Baca SEMUA gambar, termasuk setiap slide carousel/stories yang dikirim, beserta caption. Daftar posisi sering TIDAK memakai tanda baca pemisah (koma), atau tersebar di beberapa slide/gambar — amati dari teks di gambar maupun caption.
+2. Kembalikan SATU entri per posisi di array positions. DILARANG menggabungkan beberapa posisi dalam satu title (misal "Marketing, Credit Analyst, Collection" harus pecah menjadi satu entri per posisi).
+3. Untuk setiap posisi, kembangkan summary, responsibilities (jobdesk AI), requirements (jobspek), dan skills yang SPESIFIK untuk posisi tersebut — jangan sekadar menyalin teks umum lowongan.
+4. Contoh jenis posisi: Marketing, Credit Analyst, Collection, Team Leader Kredit, Teller, Customer Service, Admin, dsb.
+5. Jika setelah pemeriksaan menyeluruh lowongan memang hanya membuka SATU posisi, kembalikan array dengan satu entri.
+
+Posisi yang terdeteksi sebelumnya (konteks saja): "${current || '(tidak ada)'}"
+${opts.url ? `URL Tautan: ${opts.url}` : ''}
+Konteks Sumber: ${opts.sourceLabel}
+
+Kembalikan HANYA JSON valid sesuai skema.`;
+}
+
+// Pasangan ekstraksi kedua: minta Gemini membaca ulang SEMUA slide/gambar + caption untuk
+// memastikan array positions berisi SATU entri per posisi (dengan jobspek/jobdesk unik).
+// Mengembalikan null bila gagal sehingga pemanggil aman memakai hasil awal.
+async function refineVacancyPositions(params: {
+  sourceLabel: string;
+  url?: string;
+  caption?: string;
+  currentJobTitle?: string;
+  currentPositions?: unknown;
+  imageParts: ContentPart[];
+}): Promise<import('./src/types').JobPosition[] | null> {
+  if (!POSITION_REFINE) return null;
+  const ai = getGeminiClient();
+  const parts: ContentPart[] = [
+    {
+      text: buildPositionsRefinePrompt({
+        sourceLabel: params.sourceLabel,
+        url: params.url,
+        currentJobTitle: params.currentJobTitle,
+        currentPositions: params.currentPositions,
+      }),
+    },
+  ];
+  if (params.caption && params.caption.trim().length > 0) {
+    parts.push({ text: `--- TEKS CAPTION POSTINGAN ---\n${params.caption.trim()}` });
+  }
+  for (const p of params.imageParts) {
+    if (p && p.inlineData) parts.push(p);
+  }
+  try {
+    const response = await ai.models.generateContent({
+      model: GEMINI_MODEL,
+      contents: { parts: parts as any },
+      config: { responseMimeType: 'application/json', responseSchema: POSITIONS_SCHEMA },
+    });
+    const parsed = JSON.parse(response.text || '{}') as {
+      positions?: Array<Record<string, unknown>>;
+    };
+    const list = Array.isArray(parsed.positions) ? parsed.positions : [];
+    const clean: import('./src/types').JobPosition[] = [];
+    for (const item of list.slice(0, MAX_SLIDES)) {
+      const title = typeof item?.title === 'string' && item.title.trim() ? item.title.trim() : '';
+      if (!title) continue;
+      const arr = (v: unknown): string[] =>
+        Array.isArray(v) ? v.map((s) => String(s).trim()).filter(Boolean) : [];
+      clean.push({
+        title,
+        summary:
+          typeof item.summary === 'string' && item.summary.trim().length > 0 ? item.summary : undefined,
+        responsibilities: arr(item.responsibilities),
+        requirements: arr(item.requirements),
+        skills: arr(item.skills),
+      });
+    }
+    if (clean.length === 0) return null;
+    return clean;
+  } catch (err: any) {
+    console.warn(`[refine-posisi] gagal: ${err.message || 'unknown error'}`);
+    return null;
   }
 }
 
@@ -942,13 +1116,17 @@ async function saveBatchToExcel(batch: ScheduledBatch): Promise<boolean> {
 
 type ApiPayload = Record<string, unknown>;
 
-// Petakan satu JobVacancy menjadi objek payload sesuai dokumentasi Scraper Ingestion API.
+// Petakan satu JobVacancy + satu JobPosition menjadi objek payload sesuai dokumentasi
+// Scraper Ingestion API. Dipanggil per posisi sehingga 1 posisi = 1 record payload.
 // Hanya field yang wajib selalu disertakan; sisanya opsional (null/omitted bila kosong).
-function mapVacancyToApiPayload(v: import('./src/types').JobVacancy): ApiPayload {
+function mapVacancyToApiPayload(
+  v: import('./src/types').JobVacancy,
+  pos: import('./src/types').JobPosition
+): ApiPayload {
   const p: ApiPayload = {
     source_type: 'social_media',
     nama_perusahaan: v.companyName,
-    posisi: v.jobTitle,
+    posisi: pos.title || v.jobTitle,
   };
   if (v.platform) p.platform = v.platform;
   if (v.logoUrl) p.logo_url = v.logoUrl;
@@ -962,10 +1140,10 @@ function mapVacancyToApiPayload(v: import('./src/types').JobVacancy): ApiPayload
       p.gaji_min = nums[0];
     }
   }
-  if (v.summary) p.ringkasan_ai = v.summary;
-  if (v.responsibilities && v.responsibilities.length > 0) p.jobdesk = v.responsibilities.join(', ');
-  if (v.requirements && v.requirements.length > 0) p.kualifikasi_jobspek = v.requirements.join(', ');
-  if (v.skills && v.skills.length > 0) p.keahlian_skill = v.skills.join(', ');
+  if (pos.summary || v.summary) p.ringkasan_ai = pos.summary || v.summary;
+  if (pos.responsibilities && pos.responsibilities.length > 0) p.jobdesk = pos.responsibilities.join(', ');
+  if (pos.requirements && pos.requirements.length > 0) p.kualifikasi_jobspek = pos.requirements.join(', ');
+  if (pos.skills && pos.skills.length > 0) p.keahlian_skill = pos.skills.join(', ');
   if (v.jobType) p.tipe_pekerjaan = v.jobType;
   if (v.postDate) p.tanggal_posting = v.postDate;
   if (v.deadline) p.batas_pendaftaran = v.deadline;
@@ -1002,7 +1180,14 @@ async function sendBatchToApi(batch: ScheduledBatch): Promise<void> {
       .map((r) => (r as { vacancyData?: import('./src/types').JobVacancy }).vacancyData)
       .filter(Boolean) as import('./src/types').JobVacancy[];
     if (vacancies.length === 0) return;
-    const payload = vacancies.map(mapVacancyToApiPayload);
+    // 1 posisi = 1 record payload (pecah posisi jamak menjadi beberapa payload).
+    const payload: ApiPayload[] = [];
+    for (const v of vacancies) {
+      for (const pos of expandPositions(v)) {
+        payload.push(mapVacancyToApiPayload(v, pos));
+      }
+    }
+    if (payload.length === 0) return;
     const res = await fetch(SCRAPER_API_URL, {
       method: 'POST',
       headers: {
@@ -1242,9 +1427,9 @@ async function runScheduledIgScan(trigger: 'schedule' | 'manual'): Promise<void>
       // Kirim juga ke Scraper Ingestion API (draft database). Kegagalan tidak menggagalkan alur.
       await sendBatchToApi(batch);
     }
-    await sendWhatsAppNotification(batch.diagnostics.results, igSchedule.intervalDays);
+    await sendWhatsAppNotification(countTotalPositions(batch.results), igSchedule.intervalDays);
     igSchedule.lastRunAt = capturedAt;
-    igSchedule.lastStatus = `${trigger === 'schedule' ? 'Jadwal' : 'Manual'}: ${result.data.length} loker dari ${result.diagnostics.discovered} ditemukan (${result.diagnostics.analyzed} dianalisis).`;
+    igSchedule.lastStatus = `${trigger === 'schedule' ? 'Jadwal' : 'Manual'}: ${countTotalPositions(result.data ?? [])} loker dari ${result.diagnostics.discovered} ditemukan (${result.diagnostics.analyzed} dianalisis).`;
     if (result.warnings && result.warnings.length > 0) {
       igSchedule.lastStatus += ' ' + result.warnings.join(' ');
     }
@@ -1557,6 +1742,22 @@ async function analyzeScrapedPost(
       return results;
     }
 
+    // Langkah kedua (per-position refinement): jika ekstraksi awal menghasilkan <= 1 entri
+    // positions (misal AI menggabungkan beberapa posisi dalam satu title, atau daftar posisi
+    // hanya ada di slide/gambar tanpa pemisah), minta Gemini membaca ULANG semua slide + caption
+    // untuk mendaftar SATU entri per posisi beserta jobdesk/jobspek/keahlian yang unik.
+    if ((Array.isArray(parsed.positions) ? parsed.positions.length : 0) <= 1) {
+      const refined = await refineVacancyPositions({
+        sourceLabel: post.sourceLabel,
+        url: post.url,
+        caption,
+        currentJobTitle: typeof parsed.jobTitle === 'string' ? parsed.jobTitle : '',
+        currentPositions: parsed.positions,
+        imageParts: parts.filter((p) => Boolean(p.inlineData)),
+      });
+      if (refined) parsed.positions = refined as unknown as Record<string, unknown>[];
+    }
+
     const now = new Date();
     const vacancyId = `loker-${now.getTime()}-${Math.random().toString(36).substring(2, 7)}`;
     const feedId = `bot-${now.getTime()}-${Math.random().toString(36).substring(2, 7)}`;
@@ -1753,6 +1954,21 @@ app.post('/api/analyze-loker', async (req, res) => {
 
     const parsedResult = await generateVacancyJson(parts);
 
+    // Pasangkan kedua (per-position refinement) untuk alur manual/paste-link: jika ekstraksi
+    // awal menghasilkan <= 1 entri positions, baca ulang semua slide + gambar untuk mendaftar
+    // SATU entri per posisi (AI menangani daftar tanpa pemisah / tersebar di slide).
+    if ((Array.isArray(parsedResult.positions) ? parsedResult.positions.length : 0) <= 1) {
+      const refined = await refineVacancyPositions({
+        sourceLabel: sourceType || 'Media Sosial / Gambar Uploaded',
+        url,
+        caption: typeof parsedResult.description === 'string' ? parsedResult.description : undefined,
+        currentJobTitle: typeof parsedResult.jobTitle === 'string' ? parsedResult.jobTitle : '',
+        currentPositions: parsedResult.positions,
+        imageParts: parts.filter((p) => Boolean(p.inlineData)),
+      });
+      if (refined) parsedResult.positions = refined as unknown as Record<string, unknown>[];
+    }
+
     // Resolve the official company logo (bank/BPR logo from its website) for the Excel export
     const logoDataUrl = await resolveCompanyLogo(parsedResult);
 
@@ -1906,7 +2122,10 @@ async function runIgAutoScan(params: IgAutoScanParams = {}): Promise<IgAutoScanR
   // Pipeline: discovery runs in the background and streams posts to the analyzers as soon
   // as they are found, so discovery and analysis overlap (total time ~ max, not sum).
   // Discovery aborts early once the target is reached; if the pool runs dry first, analysis
-  // stops at whatever was found. Hanya hasil sektor perbankan yang diterima (banking-only).
+  // stops at whatever was found. Hanya hasil BPR/Koperasi/LPD yang diterima (auto-scan IG),
+  // dan target dihitung sebagai JUMLAH POSISI (bukan jumlah lowongan), jadi "Ambil 20"
+  // menghasilkan ±20 posisi. Lowongan terakhir dibiarkan utuh (tanpa pemangkasan posisi),
+  // sehingga total akhir bisa sedikit lebih (20-31). Hanya hasil sektor perbankan yang diterima (banking-only).
   const target = Math.max(1, Math.min(100, Number(maxPosts) || 15));
   const results: Record<string, unknown>[] = [];
   const seenUrls = new Set<string>();
@@ -1914,6 +2133,7 @@ async function runIgAutoScan(params: IgAutoScanParams = {}): Promise<IgAutoScanR
   let discoveryDone = false;
   let nextPostIndex = 0;
   let analyzedCount = 0;
+  let positionCount = 0;
   resetAutoScanStats();
   resetIgScanProgress();
   igScanProgress.running = true;
@@ -1939,7 +2159,7 @@ async function runIgAutoScan(params: IgAutoScanParams = {}): Promise<IgAutoScanR
         `IG ${handle} | ${post.shortcode}${cap ? ` | ${cap}${cap.length >= 90 ? '...' : ''}` : ''}`,
       ];
     },
-    () => results.length >= target,
+    () => positionCount >= target,
     (done, total, query) => {
       igScanProgress.queriesDone = done;
       igScanProgress.queriesTotal = total;
@@ -1954,7 +2174,7 @@ async function runIgAutoScan(params: IgAutoScanParams = {}): Promise<IgAutoScanR
   );
 
   const worker = async () => {
-    while (results.length < target) {
+    while (positionCount < target) {
       // Ambil indeks HANYA saat post tersedia. (Dulu indeks diambil dulu lalu dicek,
       // sehingga saat antrean masih kosong di awal discovery, indeks terbakar habis
       // melampaui discovered.length dan tidak ada satu post pun yang pernah diproses
@@ -1969,7 +2189,8 @@ async function runIgAutoScan(params: IgAutoScanParams = {}): Promise<IgAutoScanR
       try {
         // bankingOnly=true: hasil HANYA lowongan sektor perbankan (bank/BPR,
         // fintech, koperasi simpan pinjam). F&B/crew outlet/retail/hotel dll
-        // ditolak sebagai NON-BANKING.
+        // ditolak sebagai NON-BANKING. Untuk auto-scan IG, setelah analisis,
+        // lowongan dengan institutionType di luar BPR/Koperasi/LPD ditolak NON-BPR.
         //
         // analyzeScrapedPost menganalisis SATU postingan utuh (gambar utama +
         // caption) dan mengembalikan maksimal 1 hasil per postingan = 1 baris Excel.
@@ -1980,25 +2201,36 @@ async function runIgAutoScan(params: IgAutoScanParams = {}): Promise<IgAutoScanR
         const postUrl = post.url;
         for (const vacancy of vacancies) {
           if (!vacancy) continue;
+          const vd = (vacancy.vacancyData as Record<string, unknown> | undefined) || {};
+          // Filter jenis institusi: HANYA BPR / Koperasi (KSP/USP) / LPD yang diterima.
+          // Bank umum/BUMN/Persero/BPD/bank umum syariah (BSI), Pegadaian, Asuransi,
+          // dan Fintech/Pembiayaan dihitung sebagai NON-BPR dan dibuang.
+          const inst = typeof vd.institutionType === 'string' ? vd.institutionType : '';
+          if (!ALLOWED_INSTITUTION_RE.test(inst)) {
+            autoScanStats.bukanLoker++;
+            console.log(
+              `[auto-scan] NON-BPR: ${post.shortcode} "${vd.jobTitle || ''}" jenis=${inst || '(tidak diketahui)'} | ${postUrl}`
+            );
+            continue;
+          }
           // Dedupe berdasarkan ID vacancy (unik per hasil) untuk keamanan ekstra.
-          const vId = String(
-            (vacancy.vacancyData as { id?: unknown } | undefined)?.id || vacancy.id
-          );
+          const vId = String((vacancy.vacancyData as { id?: unknown } | undefined)?.id || vacancy.id);
           if (seenUrls.has(vId)) {
             autoScanStats.duplicates++;
             continue;
           }
           seenUrls.add(vId);
-          // Guard target: jangan pernah melebihi jumlah yang diminta pengguna
-          // (race antar worker bisa membuat lebih dari target jika tanpa guard ini).
-          if (results.length >= target) break;
+          // Guard target posisi: berhenti menerima lowongan baru begitu target posisi
+          // tercapai (lowongan yang sedang diproses tetap masuk utuh, tanpa pangkas posisi).
+          if (positionCount >= target) break;
           results.push(vacancy);
-          igScanProgress.resultCount = results.length;
-          igScanProgress.results = [...results].slice(0, target);
-          igScanProgress.message = `Menganalisis... ${analyzedCount} diproses, ${results.length} loker ditemukan`;
-          const vd = (vacancy.vacancyData as Record<string, unknown> | undefined) || {};
+          const nPos = expandPositions(vd as unknown as import('./src/types').JobVacancy).length;
+          positionCount += nPos;
+          igScanProgress.resultCount = positionCount;
+          igScanProgress.results = [...results];
+          igScanProgress.message = `Menganalisis... ${analyzedCount} diproses, ${positionCount} posisi loker terkumpul`;
           console.log(
-            `[auto-scan] HASIL #${results.length}: ${vd.companyName || '-'} — ${vd.jobTitle || '-'} | ${postUrl}`
+            `[auto-scan] HASIL #${positionCount}: ${vd.companyName || '-'} — ${vd.jobTitle || '-'} (${nPos} posisi) | ${postUrl}`
           );
         }
       } catch (err: any) {
@@ -2013,9 +2245,9 @@ async function runIgAutoScan(params: IgAutoScanParams = {}): Promise<IgAutoScanR
   await Promise.all(Array.from({ length: ANALYZE_CONCURRENCY }, () => worker()));
   igScanProgress.running = false;
   igScanProgress.phase = 'done';
-  igScanProgress.resultCount = results.length;
+  igScanProgress.resultCount = positionCount;
   igScanProgress.results = [...results];
-  igScanProgress.message = `Selesai: ${discovered.length} post ditemukan, ${analyzedCount} dianalisis, ${results.length} loker`;
+  igScanProgress.message = `Selesai: ${discovered.length} post ditemukan, ${analyzedCount} dianalisis, ${positionCount} posisi loker terkumpul`;
   const diagnostics = {
     queries: queries.length,
     discovered: discovered.length,
@@ -2024,18 +2256,19 @@ async function runIgAutoScan(params: IgAutoScanParams = {}): Promise<IgAutoScanR
     errorCount: autoScanStats.errors,
     duplicates: autoScanStats.duplicates,
     results: results.length,
+    positionCount,
   };
   console.log(
-    `[auto-scan] ringkasan: ${queries.length} query, ${discovered.length} post ditemukan, ${analyzedCount} dianalisis (${autoScanStats.bukanLoker} bukan loker, ${autoScanStats.errors} error, ${autoScanStats.duplicates} duplikat), ${results.length} hasil`
+    `[auto-scan] ringkasan: ${queries.length} query, ${discovered.length} post ditemukan, ${analyzedCount} dianalisis (${autoScanStats.bukanLoker} bukan loker, ${autoScanStats.errors} error, ${autoScanStats.duplicates} duplikat), ${positionCount} posisi dari ${results.length} lowongan`
   );
 
-  if (results.length === 0) {
+  if (positionCount === 0) {
     warnings.push(
-      `Tidak ditemukan postingan loker: ${discovered.length} post ditemukan, ${analyzedCount} dianalisis (${autoScanStats.bukanLoker} bukan loker, ${autoScanStats.errors} error). Discovery: ${searchStats.requests} request, ${searchStats.failed} query gagal (${searchStats.rateLimited} rate-limit), ${discoveryRecencySkipped} post dibuang karena di luar rentang ${daysBackNum} hari. Coba tambah akun IG BPR/koperasi di loker-sources.json atau perbesar jumlah postingan/rentang hari.`
+      `Tidak ditemukan lowongan BPR/koperasi: ${discovered.length} post ditemukan, ${analyzedCount} dianalisis (${autoScanStats.bukanLoker} bukan loker/BPR, ${autoScanStats.errors} error). Discovery: ${searchStats.requests} request, ${searchStats.failed} query gagal (${searchStats.rateLimited} rate-limit), ${discoveryRecencySkipped} post dibuang karena di luar rentang ${daysBackNum} hari. Coba tambah akun IG BPR/koperasi di loker-sources.json atau perbesar jumlah postingan/rentang hari.`
     );
-  } else if (results.length < target) {
+  } else if (positionCount < target) {
     warnings.push(
-      `Diminta ${target} data, terkumpul ${results.length} (dari ${analyzedCount} dianalisis: ${autoScanStats.bukanLoker} bukan loker, ${autoScanStats.errors} error). Coba tambah akun IG BPR/koperasi di loker-sources.json.`
+      `Diminta ${target} posisi, terkumpul ${positionCount} posisi dari ${results.length} lowongan (${analyzedCount} dianalisis: ${autoScanStats.bukanLoker} bukan loker/BPR, ${autoScanStats.errors} error). Coba tambah akun IG BPR/koperasi di loker-sources.json.`
     );
   }
 
@@ -2081,7 +2314,7 @@ app.post('/api/auto-scan', async (req, res) => {
     if (!result.success) {
       return res.status(400).json({ success: false, error: result.error });
     }
-    await sendWhatsAppNotification(result.diagnostics?.results ?? result.data?.length ?? 0, daysBack);
+    await sendWhatsAppNotification(countTotalPositions(result.data ?? []), daysBack);
     return res.json({ success: true, data: result.data, warnings: result.warnings, diagnostics: result.diagnostics });
   } catch (err: any) {
     console.error('Error in /api/auto-scan:', err);

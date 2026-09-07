@@ -25,6 +25,7 @@ import {
   ScheduledBatchSummary,
   ScheduledBatchDetail,
 } from '../types';
+import { expandPositions, countTotalPositions } from '../utils/positions';
 
 interface SimpleScraperBotProps {
   onAddVacancy: (vacancy: JobVacancy) => void;
@@ -414,7 +415,7 @@ export const SimpleScraperBot: React.FC<SimpleScraperBotProps> = ({
         ]);
       } else {
         setLogs((prev) => [
-          `[${new Date().toLocaleTimeString('id-ID')}] ✅ SELESAI! Berhasil mengambil ${results.length} postingan loker valid dari Instagram (${diag.discovered ?? '?'} ditemukan, ${diag.analyzed ?? '?'} dianalisis, ${diag.bukanLoker ?? '?'} bukan loker).`,
+          `[${new Date().toLocaleTimeString('id-ID')}] ✅ SELESAI! Berhasil mengambil ${countTotalPositions(results)} posisi loker valid dari Instagram (${diag.discovered ?? '?'} ditemukan, ${diag.analyzed ?? '?'} dianalisis, ${diag.bukanLoker ?? '?'} bukan loker).`,
           ...prev,
         ]);
       }
@@ -681,7 +682,7 @@ export const SimpleScraperBot: React.FC<SimpleScraperBotProps> = ({
               <span>Mengambil data langsung dari Instagram (bisa butuh beberapa menit)...</span>
             ) : scannedResults.length > 0 ? (
               <span>
-                Hasil scan: <strong className="text-slate-200">{scannedResults.length} postingan</strong> loker valid
+                Hasil scan: <strong className="text-slate-200">{countTotalPositions(scannedResults)} posisi</strong> loker valid
               </span>
             ) : totalConfiguredSources > 0 ? (
               <span>
@@ -736,7 +737,7 @@ export const SimpleScraperBot: React.FC<SimpleScraperBotProps> = ({
             <h3 className="text-base font-bold flex items-center space-x-2 text-white">
               <Sparkles className="h-5 w-5 text-amber-400" />
               <span>
-                Hasil Postingan Terdeteksi ({scannedResults.length} Loker Valid)
+                Hasil Postingan Terdeteksi ({countTotalPositions(scannedResults)} Posisi Loker Valid)
               </span>
             </h3>
             <p className="text-xs text-slate-400 mt-0.5">
@@ -771,42 +772,46 @@ export const SimpleScraperBot: React.FC<SimpleScraperBotProps> = ({
                 </tr>
               </thead>
               <tbody>
-                {scannedResults.map((item, index) => (
-                  <tr
-                    key={item.id}
-                    onClick={() => onSelectVacancy(item.vacancyData)}
-                    className="border-b border-slate-800/80 hover:bg-slate-800/40 cursor-pointer transition-colors"
-                  >
-                    <td className="px-3 py-3 text-center text-slate-500">{index + 1}</td>
-                    <td className="px-3 py-3 font-semibold text-blue-400 whitespace-nowrap">
-                      {item.vacancyData.companyName || '-'}
-                    </td>
-                    <td className="px-3 py-3 font-semibold text-slate-100">
-                      {item.vacancyData.jobTitle || '-'}
-                    </td>
-                    <td className="px-3 py-3 text-slate-300">{item.vacancyData.workLocation || '-'}</td>
-                    <td className="px-3 py-3 text-slate-300 whitespace-nowrap">
-                      {item.vacancyData.postDate || '-'}
-                    </td>
-                    <td className="px-3 py-3 text-rose-400 font-medium whitespace-nowrap">
-                      {item.vacancyData.deadline || '-'}
-                    </td>
-                    <td className="px-3 py-3 text-center">
-                      {item.vacancyData.sourceUrl && (
-                        <a
-                          href={item.vacancyData.sourceUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={(e) => e.stopPropagation()}
-                          className="inline-flex items-center space-x-1 px-2.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-bold text-[10px]"
-                        >
-                          <ExternalLink className="h-3 w-3" />
-                          <span>Buka</span>
-                        </a>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                {scannedResults
+                  .flatMap((item) =>
+                    expandPositions(item.vacancyData).map((pos) => ({ item, vd: item.vacancyData, pos }))
+                  )
+                  .map(({ item, vd, pos }, i) => (
+                    <tr
+                      key={`${item.id}-${i}`}
+                      onClick={() => onSelectVacancy(vd)}
+                      className="border-b border-slate-800/80 hover:bg-slate-800/40 cursor-pointer transition-colors"
+                    >
+                      <td className="px-3 py-3 text-center text-slate-500">{i + 1}</td>
+                      <td className="px-3 py-3 font-semibold text-blue-400 whitespace-nowrap">
+                        {vd.companyName || '-'}
+                      </td>
+                      <td className="px-3 py-3 font-semibold text-slate-100">
+                        {pos.title || '-'}
+                      </td>
+                      <td className="px-3 py-3 text-slate-300">{vd.workLocation || '-'}</td>
+                      <td className="px-3 py-3 text-slate-300 whitespace-nowrap">
+                        {vd.postDate || '-'}
+                      </td>
+                      <td className="px-3 py-3 text-rose-400 font-medium whitespace-nowrap">
+                        {vd.deadline || '-'}
+                      </td>
+                      <td className="px-3 py-3 text-center">
+                        {vd.sourceUrl && (
+                          <a
+                            href={vd.sourceUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="inline-flex items-center space-x-1 px-2.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-bold text-[10px]"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            <span>Buka</span>
+                          </a>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
               </tbody>
             </table>
           </div>
@@ -876,32 +881,35 @@ export const SimpleScraperBot: React.FC<SimpleScraperBotProps> = ({
                           </tr>
                         </thead>
                         <tbody>
-                          {previewBatch.results.map((item, index) => {
-                            const vd = item.vacancyData;
-                            return (
-                              <tr key={item.id || index} className="border-b border-slate-800/80 hover:bg-slate-800/40">
-                                <td className="px-3 py-2.5 text-slate-500">{index + 1}</td>
-                                <td className="px-3 py-2.5 font-semibold text-blue-400 whitespace-nowrap">
-                                  {vd.companyName || '-'}
-                                </td>
-                                <td className="px-3 py-2.5 text-slate-100">{vd.jobTitle || '-'}</td>
-                                <td className="px-3 py-2.5 text-slate-300">{vd.workLocation || '-'}</td>
-                                <td className="px-3 py-2.5 text-rose-400 whitespace-nowrap">{vd.deadline || '-'}</td>
-                                <td className="px-3 py-2.5 text-center">
-                                  {vd.sourceUrl && (
-                                    <a
-                                      href={vd.sourceUrl}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      className="inline-flex px-2 py-1 rounded-md bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-bold"
-                                    >
-                                      Buka
-                                    </a>
-                                  )}
-                                </td>
-                              </tr>
-                            );
-                          })}
+                          {previewBatch.results
+                            .flatMap((item) =>
+                              expandPositions(item.vacancyData).map((pos) => ({ item, vd: item.vacancyData, pos }))
+                            )
+                            .map(({ item, vd, pos }, i) => {
+                              return (
+                                <tr key={`${item.id || i}-${i}`} className="border-b border-slate-800/80 hover:bg-slate-800/40">
+                                  <td className="px-3 py-2.5 text-slate-500">{i + 1}</td>
+                                  <td className="px-3 py-2.5 font-semibold text-blue-400 whitespace-nowrap">
+                                    {vd.companyName || '-'}
+                                  </td>
+                                  <td className="px-3 py-2.5 text-slate-100">{pos.title || '-'}</td>
+                                  <td className="px-3 py-2.5 text-slate-300">{vd.workLocation || '-'}</td>
+                                  <td className="px-3 py-2.5 text-rose-400 whitespace-nowrap">{vd.deadline || '-'}</td>
+                                  <td className="px-3 py-2.5 text-center">
+                                    {vd.sourceUrl && (
+                                      <a
+                                        href={vd.sourceUrl}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="inline-flex px-2 py-1 rounded-md bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-bold"
+                                      >
+                                        Buka
+                                      </a>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
                         </tbody>
                       </table>
                     </div>

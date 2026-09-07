@@ -81,7 +81,7 @@ export const HowToUseModal: React.FC<HowToUseModalProps> = ({ isOpen, onClose })
               <span>3. Mengunduh Laporan dalam Format Excel (.XLSX)</span>
             </h4>
             <p>
-              Setiap kali loker terdeteksi, Anda dapat menekan tombol <b>"Export Excel"</b> untuk mengunduh laporan berformat Excel (.xlsx) dengan 1 baris per perusahaan — lengkap dengan posisi, lokasi, gaji, deadline, dan tautan kontak pendaftaran yang rapi dan siap diolah.
+              Setiap kali loker terdeteksi, Anda dapat menekan tombol <b>"Export Excel"</b> untuk mengunduh laporan berformat Excel (.xlsx) dengan 1 baris per posisi/jabatan — lengkap dengan posisi, lokasi, gaji, deadline, dan tautan kontak pendaftaran yang rapi dan siap diolah.
             </p>
           </div>
 

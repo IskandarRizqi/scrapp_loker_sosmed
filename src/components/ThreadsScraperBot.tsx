@@ -11,6 +11,7 @@ import {
   Pause,
 } from 'lucide-react';
 import { JobVacancy, BotFeedItem, ThreadsStatusPayload } from '../types';
+import { expandPositions, countTotalPositions } from '../utils/positions';
 
 interface ThreadsScraperBotProps {
   onAddVacancy: (vacancy: JobVacancy) => void;
@@ -206,7 +207,7 @@ export const ThreadsScraperBot: React.FC<ThreadsScraperBotProps> = ({
         ]);
       } else {
         setLogs((prev) => [
-          `[${new Date().toLocaleTimeString('id-ID')}] ✅ SELESAI! Berhasil mengambil ${results.length} loker perbankan valid dari Threads (${diag.collected ?? '?'} post terkumpul, ${diag.analyzed ?? '?'} dianalisis, ${diag.bukanLoker ?? '?'} bukan loker).`,
+          `[${new Date().toLocaleTimeString('id-ID')}] ✅ SELESAI! Berhasil mengambil ${countTotalPositions(results)} posisi loker perbankan valid dari Threads (${diag.collected ?? '?'} post terkumpul, ${diag.analyzed ?? '?'} dianalisis, ${diag.bukanLoker ?? '?'} bukan loker).`,
           ...prev,
         ]);
       }
@@ -275,7 +276,7 @@ export const ThreadsScraperBot: React.FC<ThreadsScraperBotProps> = ({
           <button
             onClick={handleExportAllScannedExcel}
             className="flex items-center space-x-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-lg shadow-emerald-900/40 transition-all self-start lg:self-auto"
-            title="Download seluruh hasil ke Excel (.XLSX) — 1 baris per perusahaan"
+            title="Download seluruh hasil ke Excel (.XLSX) — 1 baris per posisi / jabatan"
           >
             <FileDown className="h-4 w-4" />
             <span>Export Ke Excel (.XLSX)</span>
@@ -359,7 +360,7 @@ export const ThreadsScraperBot: React.FC<ThreadsScraperBotProps> = ({
               <span>Mengumpulkan post & menganalisis dengan AI (bisa butuh beberapa menit)...</span>
             ) : scannedResults.length > 0 ? (
               <span>
-                Hasil scan: <strong className="text-slate-200">{scannedResults.length} loker</strong>{' '}
+                Hasil scan: <strong className="text-slate-200">{countTotalPositions(scannedResults)} posisi</strong>{' '}
                 valid dari Threads
               </span>
             ) : threadsStatus.accountsCount > 0 ? (
@@ -427,7 +428,7 @@ export const ThreadsScraperBot: React.FC<ThreadsScraperBotProps> = ({
           <div>
             <h3 className="text-base font-bold flex items-center space-x-2 text-white">
               <Sparkles className="h-5 w-5 text-amber-400" />
-              <span>Hasil Postingan Terdeteksi ({scannedResults.length} Loker Valid)</span>
+              <span>Hasil Postingan Terdeteksi ({countTotalPositions(scannedResults)} Posisi Loker Valid)</span>
             </h3>
             <p className="text-xs text-slate-400 mt-0.5">
               Setiap post dilengkapi link URL resmi Threads & teks/gambar yang dianalisis AI.
@@ -462,30 +463,34 @@ export const ThreadsScraperBot: React.FC<ThreadsScraperBotProps> = ({
                 </tr>
               </thead>
               <tbody>
-                {scannedResults.map((item, index) => (
+                {scannedResults
+                  .flatMap((item) =>
+                    expandPositions(item.vacancyData).map((pos) => ({ item, vd: item.vacancyData, pos }))
+                  )
+                  .map(({ item, vd, pos }, i) => (
                   <tr
-                    key={item.id}
-                    onClick={() => onSelectVacancy(item.vacancyData)}
+                    key={`${item.id}-${i}`}
+                    onClick={() => onSelectVacancy(vd)}
                     className="border-b border-slate-800/80 hover:bg-slate-800/40 cursor-pointer transition-colors"
                   >
-                    <td className="px-3 py-3 text-center text-slate-500">{index + 1}</td>
+                    <td className="px-3 py-3 text-center text-slate-500">{i + 1}</td>
                     <td className="px-3 py-3 font-semibold text-blue-400 whitespace-nowrap">
-                      {item.vacancyData.companyName || '-'}
+                      {vd.companyName || '-'}
                     </td>
-                    <td className="px-3 py-3 font-semibold text-slate-100">
-                      {item.vacancyData.jobTitle || '-'}
+                     <td className="px-3 py-3 font-semibold text-slate-100">
+                      {pos.title || '-'}
                     </td>
-                    <td className="px-3 py-3 text-slate-300">{item.vacancyData.workLocation || '-'}</td>
+                    <td className="px-3 py-3 text-slate-300">{vd.workLocation || '-'}</td>
                     <td className="px-3 py-3 text-slate-300 whitespace-nowrap">
-                      {item.vacancyData.postDate || '-'}
+                      {vd.postDate || '-'}
                     </td>
                     <td className="px-3 py-3 text-rose-400 font-medium whitespace-nowrap">
-                      {item.vacancyData.deadline || '-'}
+                      {vd.deadline || '-'}
                     </td>
                     <td className="px-3 py-3 text-center">
-                      {item.vacancyData.sourceUrl && (
+                      {vd.sourceUrl && (
                         <a
-                          href={item.vacancyData.sourceUrl}
+                          href={vd.sourceUrl}
                           target="_blank"
                           rel="noopener noreferrer"
                           onClick={(e) => e.stopPropagation()}

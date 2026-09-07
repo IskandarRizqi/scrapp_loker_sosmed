@@ -4,6 +4,7 @@ import * as ExcelJSNS from 'exceljs';
 // constructor di `.default`. Fallback ini membuat `ExcelJS.Workbook` berfungsi di BOTH.
 const ExcelJS = (ExcelJSNS as any).default ?? ExcelJSNS;
 import { JobVacancy } from '../types';
+import { expandPositions } from './positions';
 
 // Layout: Logo di depan nama perusahaan, email tepat di sebelahnya, alamat admin + fisik
 // terpisah, dan kolom AI (ringkasan / jobdesk / jobspek / keahlian) di urutan yang diminta user.
@@ -113,41 +114,46 @@ export async function exportVacanciesToExcel(
   });
   headerRow.height = 32;
 
-  valid.forEach((item, index) => {
-    const row = sheet.addRow([
-      index + 1,
-      '',
-      val(item.companyName),
-      val(item.contactInfo?.email),
-      adminAddressLabel(item.adminAddress),
-      val(item.contactInfo?.address),
-      val(item.salaryInfo),
-      val(item.jobTitle),
-      val(item.summary),
-      list(item.responsibilities),
-      list(item.requirements),
-      list(item.skills),
-      val(item.jobType),
-      val(item.postDate || formatDate(item.detectedAt)),
-      val(item.deadline),
-      val(item.contactInfo?.phoneWhatsapp),
-      val(item.contactInfo?.websiteForm),
-      val(item.contactInfo?.instagramDm),
-      val(item.workLocation),
-      val(item.howToApply),
-      val(item.jobCategory),
-      val(item.sourceUrl),
-      val(item.platform),
-    ]);
-    row.eachCell((cell) => {
-      cell.alignment = { vertical: 'top', wrapText: true };
-      cell.border = { top: { style: 'hair' }, bottom: { style: 'hair' }, left: { style: 'hair' }, right: { style: 'hair' } };
+  let rowNum = 0;
+  valid.forEach((item) => {
+    const positions = expandPositions(item);
+    positions.forEach((pos) => {
+      rowNum += 1;
+      const row = sheet.addRow([
+        rowNum,
+        '',
+        val(item.companyName),
+        val(item.contactInfo?.email),
+        adminAddressLabel(item.adminAddress),
+        val(item.contactInfo?.address),
+        val(item.salaryInfo),
+        val(pos.title),
+        val(pos.summary || item.summary),
+        list(pos.responsibilities),
+        list(pos.requirements),
+        list(pos.skills),
+        val(item.jobType),
+        val(item.postDate || formatDate(item.detectedAt)),
+        val(item.deadline),
+        val(item.contactInfo?.phoneWhatsapp),
+        val(item.contactInfo?.websiteForm),
+        val(item.contactInfo?.instagramDm),
+        val(item.workLocation),
+        val(item.howToApply),
+        val(item.jobCategory),
+        val(item.sourceUrl),
+        val(item.platform),
+      ]);
+      row.eachCell((cell) => {
+        cell.alignment = { vertical: 'top', wrapText: true };
+        cell.border = { top: { style: 'hair' }, bottom: { style: 'hair' }, left: { style: 'hair' }, right: { style: 'hair' } };
+      });
+      row.getCell(1).alignment = { vertical: 'top', horizontal: 'center' };
+      row.getCell(2).alignment = { vertical: 'middle', horizontal: 'center' };
+      row.getCell(3).font = { bold: true };
+      row.getCell(23).alignment = { vertical: 'top', horizontal: 'center' };
+      addLogoImage(workbook, sheet, row, item.logoDataUrl);
     });
-    row.getCell(1).alignment = { vertical: 'top', horizontal: 'center' };
-    row.getCell(2).alignment = { vertical: 'middle', horizontal: 'center' };
-    row.getCell(3).font = { bold: true };
-    row.getCell(23).alignment = { vertical: 'top', horizontal: 'center' };
-    addLogoImage(workbook, sheet, row, item.logoDataUrl);
   });
 
   sheet.columns.forEach((column, i) => {
@@ -227,41 +233,46 @@ export async function exportVacanciesToExcelBuffer(vacancies: JobVacancy[]): Pro
   });
   headerRow.height = 32;
 
-  valid.forEach((item, index) => {
-    const row = sheet.addRow([
-      index + 1,
-      '',
-      val(item.companyName),
-      val(item.contactInfo?.email),
-      adminAddressLabel(item.adminAddress),
-      val(item.contactInfo?.address),
-      val(item.salaryInfo),
-      val(item.jobTitle),
-      val(item.summary),
-      list(item.responsibilities),
-      list(item.requirements),
-      list(item.skills),
-      val(item.jobType),
-      val(item.postDate || formatDate(item.detectedAt)),
-      val(item.deadline),
-      val(item.contactInfo?.phoneWhatsapp),
-      val(item.contactInfo?.websiteForm),
-      val(item.contactInfo?.instagramDm),
-      val(item.workLocation),
-      val(item.howToApply),
-      val(item.jobCategory),
-      val(item.sourceUrl),
-      val(item.platform),
-    ]);
-    row.eachCell((cell) => {
-      cell.alignment = { vertical: 'top', wrapText: true };
-      cell.border = { top: { style: 'hair' }, bottom: { style: 'hair' }, left: { style: 'hair' }, right: { style: 'hair' } };
+  let rowNum = 0;
+  valid.forEach((item) => {
+    const positions = expandPositions(item);
+    positions.forEach((pos) => {
+      rowNum += 1;
+      const row = sheet.addRow([
+        rowNum,
+        '',
+        val(item.companyName),
+        val(item.contactInfo?.email),
+        adminAddressLabel(item.adminAddress),
+        val(item.contactInfo?.address),
+        val(item.salaryInfo),
+        val(pos.title),
+        val(pos.summary || item.summary),
+        list(pos.responsibilities),
+        list(pos.requirements),
+        list(pos.skills),
+        val(item.jobType),
+        val(item.postDate || formatDate(item.detectedAt)),
+        val(item.deadline),
+        val(item.contactInfo?.phoneWhatsapp),
+        val(item.contactInfo?.websiteForm),
+        val(item.contactInfo?.instagramDm),
+        val(item.workLocation),
+        val(item.howToApply),
+        val(item.jobCategory),
+        val(item.sourceUrl),
+        val(item.platform),
+      ]);
+      row.eachCell((cell) => {
+        cell.alignment = { vertical: 'top', wrapText: true };
+        cell.border = { top: { style: 'hair' }, bottom: { style: 'hair' }, left: { style: 'hair' }, right: { style: 'hair' } };
+      });
+      row.getCell(1).alignment = { vertical: 'top', horizontal: 'center' };
+      row.getCell(2).alignment = { vertical: 'middle', horizontal: 'center' };
+      row.getCell(3).font = { bold: true };
+      row.getCell(23).alignment = { vertical: 'top', horizontal: 'center' };
+      addLogoImage(workbook, sheet, row, item.logoDataUrl);
     });
-    row.getCell(1).alignment = { vertical: 'top', horizontal: 'center' };
-    row.getCell(2).alignment = { vertical: 'middle', horizontal: 'center' };
-    row.getCell(3).font = { bold: true };
-    row.getCell(23).alignment = { vertical: 'top', horizontal: 'center' };
-    addLogoImage(workbook, sheet, row, item.logoDataUrl);
   });
 
   sheet.columns.forEach((column, i) => {

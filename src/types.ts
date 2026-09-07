@@ -6,6 +6,17 @@ export interface ContactInfo {
   address?: string;
 }
 
+// Satu posisi/jabatan dalam satu lowongan. Satu postingan yang membuka banyak posisi
+// (misal "Marketing, Credit Analyst, Collection") menghasilkan satu JobPosition per posisi,
+// masing-masing dengan jobdesk/jobspek/keahlian hasil pengembangan AI.
+export interface JobPosition {
+  title: string; // Nama posisi / jabatan, misal "Marketing"
+  summary?: string; // ringkasan AI khusus posisi ini
+  responsibilities?: string[]; // jobdesk AI (tanggung jawab) khusus posisi ini
+  requirements?: string[]; // jobspek (syarat & kualifikasi) khusus posisi ini
+  skills?: string[]; // keahlian khusus posisi ini
+}
+
 // Top-level navigation pages of the app (hash-based routing in App.tsx)
 export type AppPage = 'dashboard' | 'instagram' | 'facebook' | 'twitter' | 'threads' | 'ocr';
 
@@ -16,6 +27,9 @@ export interface JobVacancy {
   detectionReason: string; // why AI thinks it is/isn't a job vacancy
   companyName: string;
   jobTitle: string;
+  // Daftar posisi/jabatan (jika satu postingan membuka banyak posisi). Bila tidak ada,
+  // cukup gunakan satu posisi turunan dari jobTitle + responsibilities/requirements/skills.
+  positions?: JobPosition[];
   jobCategory: string; // e.g. Perbankan & Keuangan, IT & Tech, Admin & HR, BUMN, Retail, etc.
   jobType: string; // Full-Time, Part-Time, Freelance, Internship, Contract, Unknown
   workLocation: string; // e.g., Jakarta Selatan, Surabaya, Remote, Hybrid

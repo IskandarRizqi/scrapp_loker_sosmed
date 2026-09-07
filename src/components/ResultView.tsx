@@ -22,6 +22,7 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import { JobVacancy } from '../types';
+import { positionTitles } from '../utils/positions';
 
 interface ResultViewProps {
   vacancy: JobVacancy;
@@ -41,7 +42,7 @@ export const ResultView: React.FC<ResultViewProps> = ({ vacancy, onSave, isSaved
   const handleCopySummary = () => {
     const summaryText = `📌 *INFORMASI LOKER TERDETEKSI*
 🏢 *Perusahaan:* ${vacancy.companyName || '-'}
-💼 *Posisi:* ${vacancy.jobTitle || '-'}
+💼 *Posisi:* ${positionTitles(vacancy)}
 📍 *Lokasi:* ${vacancy.workLocation || '-'}
 💰 *Gaji:* ${vacancy.salaryInfo || '-'}
 ⏳ *Batas Akhir:* ${vacancy.deadline || '-'}
@@ -130,7 +131,7 @@ _Di-scan via LokerDetector AI_`;
               <Briefcase className="h-5 w-5 text-indigo-400 mt-0.5 shrink-0" />
               <div>
                 <p className="text-[11px] text-slate-400 uppercase font-semibold tracking-wider">Posisi / Jabatan</p>
-                <p className="text-sm font-bold text-slate-100">{vacancy.jobTitle || '-'}</p>
+                <p className="text-sm font-bold text-slate-100">{positionTitles(vacancy)}</p>
               </div>
             </div>
 
